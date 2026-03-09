@@ -1,0 +1,364 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import json
+import os
+import pickle
+import glob
+import time
+
+from merge.instance_detector.instance_detector import InstanceDetector
+from merge.image_tools.image_tools import (
+    read_image_as_cv,
+    show_image_cv,
+    stitch_images,
+    scale_image_cv_max_size,
+)
+
+
+def load_object_images(object_image_files):
+    object_images = {}
+    for object_images_file in object_image_files:
+        print("loading", object_images_file)
+        object_image = read_image_as_cv(object_images_file)
+        object_label = os.path.basename(object_images_file[:-4])
+        object_images.update({f"{object_label}": object_image})
+    return object_images
+
+
+def load_pickle(person_actions_file):
+    # print(f"Loading: {person_actions_file}")
+    with open(person_actions_file, "rb") as file:
+        return pickle.load(file)
+
+
+def export_results(export_file, responses):
+    with open(export_file, "w") as file:
+        json.dump(responses, file, indent=4)
+
+
+def get_filenames(
+    data_path,
+    object_images_folder="object_images",
+    person_actions_folder="person_actions",
+):
+    object_images_path = os.path.join(data_path, object_images_folder)
+    person_actions_path = os.path.join(data_path, person_actions_folder)
+
+    object_images_files = sorted(
+        [
+            os.path.join(object_images_path, f)
+            for f in os.listdir(object_images_path)
+            if f.endswith(".jpg")
+        ]
+    )
+    person_actions_files = sorted(
+        [
+            os.path.join(person_actions_path, f)
+            for f in os.listdir(person_actions_path)
+            if f.endswith(".pkl")
+        ]
+    )
+
+    return object_images_files, person_actions_files
+
+
+class Carma:
+    def __init__(
+        self,
+        object_images,
+        use_ocad_labels=True,
+        use_ocad_trigger=False,
+        model="gpt-4o",
+    ):
+        self.similarity_threshold = 0.0
+        self.frame_count = 0
+        self.model = model
+        self.use_ocad_labels = use_ocad_labels
+        self.use_ocad_trigger = use_ocad_trigger
+        self.object_images = object_images
+        vlm_model = model
+        if "-video" in vlm_model:
+            vlm_model = vlm_model.replace("-video", "")
+        self.instance_detector = InstanceDetector(vlm_model=vlm_model)
+        self.previous_actions = {}
+        self.previous_action_patterns = {}
+        self.image_buffer = {}
+        self.image_quadrupels = []
+        self.person_images = {}
+        self.person_actions = {}
+        self.instance_detector.pre_text = (
+            "You are given a sequence of images for objects, persons and four consecutive images that might contain objects or persons. "
+            "Each object image has a caption in the form 'object_x' for labeled object images, where 'x' is the "
+            "ID of the object. For person images, the caption contains the person ID and the action the person probbably performs like "
+            "this 'person_id: action_label'. The four consecutive images are captioned by 'image_y', where 'y' is the frame number.\n"
+            "Your task:\n"
+            "- Look only at the final image captioned with 'Caption this image', to detect if a person performs an action and the object "
+            " it interacts with. If present, take the action provided in the person caption into account and verify if the caption is "
+            "correct\n."
+            "- Double check if the person really touches the object with his hands and interacts with it. "
+            "If not, always use the label 'idle', never None or 'null'. Exclusively use following atomic actions: grasp, handover, place_down, "
+            "hold or pour."
+            "Important:\n"
+            "1. Focus on each single action-person relation sperataley.\n"
+            "2. You must use one of the provided object labels if the person is interacting with it. If you are not sure about an object label, "
+            "always use an empty string '', never None or 'null'.\n"
+            "3. If you identify the robot_hand of the robot in the image, verify if the robot is interacting with the human. "
+            " If yes, set the item {'robot_interaction': true} if not, set it to {'robot_interaction’: false}.\n"
+            "4. You must include the spatial relation to a second involved object if two objects are placed in or on each other, "
+            " like {'object': 'object_1', 'action': 'place_down', 'on': 'object_3’}. The objects must be obviously in contact.\n"
+        )
+        self.instance_detector.post_text = (
+            "Return a JSON dict describing the action of the acting persons like {67bc6c24b50c035c485bbf56: {'object': 'object_2', "
+            "'action': 'hold', 'robot_interaction': False}. Only return a single dictionary for the complete image sequence. "
+        )
+
+    def add_image(self, image):
+        self.image_quadrupels.append(image)
+        if len(self.image_quadrupels) > 4:
+            self.image_quadrupels.pop(0)
+        return self.image_quadrupels
+
+    def write_result(self, results_path, image_filename, action_patterns):
+        for person_id, action_pattern in action_patterns.items():
+            person_id = person_id.replace("id_", "")
+            results_file = f"{image_filename[:-4]}_id_{person_id}.json"
+            if action_pattern.get("action") == "idle":
+                print(f"{person_id}: {action_pattern} contains 'idle', skipping ...")
+                continue
+            if (
+                person_id in self.previous_action_patterns
+                and self.previous_action_patterns[person_id] == action_pattern
+            ):
+                print(
+                    f"{person_id}: {action_pattern} already appeared before, skipping ..."
+                )
+                continue
+            self.previous_action_patterns.update({person_id: action_pattern})
+            results_filename = os.path.join(results_path, results_file)
+            print(
+                f"{person_id}: {action_pattern} detected, writing to {results_filename}"
+            )
+            with open(results_filename, "w") as file:
+                json.dump([action_pattern], file, indent=4)
+
+    def create_action_patterns(
+        self, action_images, action_captions, object_images, object_captions
+    ):
+        images = object_images + action_images
+        # do 5 retries if reponse fails
+        retries = 5
+        if "-video" in self.model:
+            video_images = action_images
+            images = object_images
+            captions = object_captions
+        else:
+            video_images = None
+            images = object_images + action_images
+            captions = object_captions + action_captions
+        for i in range(retries):
+            try:
+                response = self.instance_detector.identify_instances(
+                    images,
+                    image_captions=captions,
+                    response_format="json_object",
+                    video_images=video_images,
+                )
+                break
+            except Exception:
+                wait = 2**i
+                print(f"Retry {i + 1}/{retries} after {wait}s due to response error")
+                time.sleep(wait)
+                response = "{}"
+        if not isinstance(response, str):
+            response = "{}"
+        action_patterns = json.loads(response)
+        if not isinstance(action_patterns, dict):
+            action_patterns = {}
+        for actor_type, action_pattern in action_patterns.items():
+            # remove if idle action
+            if (actor_type == "robot_interaction") or (action_pattern is None):
+                continue
+            if "action" == actor_type and action_pattern == "idle":
+                action_patterns = {}
+            # remove if invalid object label
+            if "object" == actor_type and (
+                action_pattern not in list(self.object_images.keys())
+            ):
+                action_patterns = {}
+            for spatial_relation in ["in", "on"]:
+                if spatial_relation == actor_type and (
+                    action_pattern not in list(self.object_images.keys())
+                ):
+                    action_patterns = {}
+        return action_patterns
+
+    def process(self, image_quadrupel, person_actions, show_images=False):
+        action_patterns = {}
+        self.person_actions = {}
+        person_images = []
+        person_captions = []
+        short_person_captions = []
+        image_captions = []
+        object_images = list(self.object_images.values())
+        object_captions = list(self.object_images.keys())
+        # update person images by latest data
+        for person_id, data in person_actions.items():
+            self.person_images.update({person_id: data["image"]})
+            self.person_actions.update({person_id: data["action"]})
+        # caption full images
+        for image_idx in range(len(image_quadrupel)):
+            image_caption = f"image_{image_idx}"
+            if image_idx == len(image_quadrupel) - 1:
+                image_caption += ": Caption this image."
+            image_captions.append(image_caption)
+        for person_id, person_image in self.person_images.items():
+            person_images.append(person_image)
+            if person_id in self.person_actions:
+                person_caption = f"{person_id}: {self.person_actions[person_id]}"
+            else:
+                person_caption = f"{person_id}: idle"
+            person_captions.append(person_caption)
+            short_person_captions.append(person_caption[20:])
+        if self.person_actions:
+            if show_images:
+                stitched_image = stitch_images(
+                    images=object_images + person_images + image_quadrupel,
+                    font_size=0.36,
+                    grid_size=(3, 4),
+                    caption_text=object_captions
+                    + short_person_captions
+                    + image_captions,
+                    scale=2.0,
+                )
+                show_image_cv(stitched_image, wait_key=0)
+            action_patterns = self.create_action_patterns(
+                image_quadrupel,
+                image_captions,
+                object_images + person_images,
+                object_captions + person_captions,
+            )
+        return action_patterns
+
+
+def get_sorted_imagefiles(images_path):
+    image_files = []
+    for image_file in os.listdir(images_path):
+        if "_id_" in image_file:
+            continue
+        else:
+            image_files.append(image_file)
+    return sorted(image_files)
+
+
+def main(run_settings, runs, base_folder, show_images, write_results, iterations):
+
+    start_iterations_at = 0
+    # ########################## MAIN LOOP ############################################
+    for run in runs:
+        for iteration in range(start_iterations_at, iterations):
+            for run_setting in run_settings:
+                data_path = os.path.join(base_folder, run)
+                images_path = os.path.join(data_path, "images")
+                image_filenames = get_sorted_imagefiles(images_path=images_path)
+                nb_images = len(image_filenames)
+                use_ocad_labels = True if "label" in run_setting[0] else False
+                use_ocad_trigger = True if "trigger" in run_setting[1] else False
+                model = "gpt-4o" if run_setting[2] == "" else run_setting[2]
+                run_name = f"{run_setting[1]}-{run_setting[0]}-full-{model}-{iteration}"
+                export_folder = f"{data_path}/runs/{run_name}"
+                if write_results:
+                    if not os.path.exists(export_folder):
+                        os.makedirs(export_folder)
+                    else:
+                        patterns = ["*.json", "*.jpg"]
+                        files = []
+                        for pattern in patterns:
+                            files.extend(
+                                glob.glob(os.path.join(export_folder, pattern))
+                            )
+                        for file in files:
+                            print(f"removing {file}")
+                            os.remove(file)
+
+                object_image_files, person_action_files = get_filenames(
+                    data_path=data_path
+                )
+                object_images = load_object_images(object_image_files)
+                carma_processor = Carma(
+                    object_images, use_ocad_labels, use_ocad_trigger, model
+                )
+
+                processing_time = time.time()
+                for image_filename in image_filenames:
+                    print(f"loading: {image_filename}")
+                    person_actions = {}
+                    timestamp = image_filename[:-4]
+                    current_image = read_image_as_cv(
+                        os.path.join(images_path, image_filename)
+                    )
+                    image_quadrupel = carma_processor.add_image(
+                        scale_image_cv_max_size(current_image, 512)
+                    )
+                    for person_action_file in person_action_files:
+                        if timestamp in person_action_file:
+                            person_actions_data = load_pickle(person_action_file)
+                            for person_id, data in person_actions_data.items():
+                                if data[-1]["trigger"]:
+                                    person_actions.update(
+                                        {
+                                            person_id: {
+                                                "image": data[-1]["image"],
+                                                "action": data[-1]["action"],
+                                            }
+                                        }
+                                    )
+                    action_patterns = carma_processor.process(
+                        image_quadrupel, person_actions, show_images=show_images
+                    )
+                    carma_processor.write_result(
+                        export_folder, image_filename, action_patterns
+                    )
+                processing_time = time.time() - processing_time
+                if write_results:
+                    with open(
+                        os.path.join(export_folder, "processing_time.json"), "w"
+                    ) as f:
+                        json.dump(
+                            {"processing_time": processing_time, "images": nb_images}, f
+                        )
+
+
+if __name__ == "__main__":
+
+    # ########################## RUNS CONFIGURATION #################################
+    # run settings: ["trigger", ""], ["label", ""], ["gpt-4o", "gpt-5", "gemini-2.5-flash", "gemini-2.5-flash-video", ""]
+    run_settings = [("label", "trigger", "gpt-4o")]
+
+    # ########################## BASIC CONTROL #######################################
+    show_images = True
+    write_results = False
+
+    # ########################## EXPERIMENTS #########################################
+    iterations = 1
+    base_folder = "data"
+    experiments = [
+        "scene_001_sf1P",
+        "scene_002_sf2P",
+        "scene_003_sf2P",
+        "scene_004_sf2P",
+        "scene_005_sf1P1R",
+        "scene_006_sf1P1R",
+        "scene_007_sf2P1R",
+        "scene_008_sf2P1R",
+        "scene_009_po2P",
+        "scene_010_po2P",
+        "scene_011_po1P1R",
+        "scene_012_po1P1R",
+        "scene_013_ha2P",
+        "scene_014_ha2P",
+        "scene_015_ha1P1R",
+        "scene_016_ha1P1R",
+    ]
+
+    main(run_settings, experiments, base_folder, show_images, write_results, iterations)
