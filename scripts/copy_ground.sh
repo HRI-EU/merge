@@ -40,12 +40,8 @@ set -euo pipefail
 shopt -s nullglob
 
 SRC_DIR="/hri/storage/rawvideo/Smile/ocad/GROUND-eval"
-TRG_DIR="data/"
-
-BLACKLIST=(
-  "scene_007_PsortO"
-  "scene_008_PsortO"
-)
+TRG_DIR="data"
+BLUR_FACES=True
 
 for src_path in "$SRC_DIR"/scene_*; do
   [[ -d "$src_path" ]] || continue
@@ -53,28 +49,48 @@ for src_path in "$SRC_DIR"/scene_*; do
 
   echo "=== Processing: $folder_name"
 
-  # ---- Check blacklist ----
-  skip=false
-  for blocked in "${BLACKLIST[@]}"; do
-    if [[ "$folder_name" == "$blocked" ]]; then
-      skip=true
-      break
-    fi
-  done
-
-  if $skip; then
-    echo "Skipping (blacklisted): $folder_name"
-    continue
-  fi
-
-  echo "Processing: $folder_name"
-
   rm -rf "$TRG_DIR"/"$folder_name"/"images"
   cp -r "$SRC_DIR"/"$folder_name"/"images" "$TRG_DIR"/"$folder_name"
   rm -rf "$TRG_DIR"/"$folder_name"/"object_images"
   cp -r "$SRC_DIR"/"$folder_name"/"object_images" "$TRG_DIR"/"$folder_name"
   rm -rf "$TRG_DIR"/"$folder_name"/"person_images"
   cp -r "$SRC_DIR"/"$folder_name"/"person_images" "$TRG_DIR"/"$folder_name"
+
+  if [ "$BLUR_FACES" = True ]; then
+    echo "Blurring faces in: $folder_name"
+
+    find "$TRG_DIR/$folder_name" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0 |
+    while IFS= read -r -d '' img; do
+      tmp="${img}.blurred"
+      deface "$img" --output "$tmp" --mask-scale 0.95
+      mv "$tmp" "$img"
+    done
+  fi
+
   echo "=== Done: $folder_name"
   echo
 done
+
+echo "=== Creating combined video from all images folders"
+
+LIST_FILE="$TRG_DIR/merge_eval.txt"
+VIDEO_OUT="$TRG_DIR/merge_eval.mp4"
+FPS=30
+
+rm -f "$LIST_FILE"
+
+find "$TRG_DIR" -path "*/images/*" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) \
+  | sort \
+  | while read -r img; do
+      printf "file '%s'\n" "$(realpath "$img")" >> "$LIST_FILE"
+    done
+
+ffmpeg -y \
+  -f concat \
+  -safe 0 \
+  -r "$FPS" \
+  -i "$LIST_FILE" \
+  -vf "format=yuv420p" \
+  "$VIDEO_OUT"
+
+echo "=== Video created: $VIDEO_OUT"

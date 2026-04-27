@@ -14,7 +14,8 @@ dependencies = [
     "openai",
     "opencv-python",
     "black",
-    "ruff"
+    "ruff",
+    "deface"
 ]
 
 [tool.hatch.build.targets.wheel]
