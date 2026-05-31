@@ -1,49 +1,98 @@
-## MERGE: Guided Vision-Language Models for Multi-actor Event Reasoning and Grounding in Human–Robot Interaction
+# MERGE: Guided Vision-Language Models for Multi-Actor Event Reasoning and Grounding in Human-Robot Interaction
 
-### Installation
+This repository contains the implementation of **MERGE**, a system for multi-actor event reasoning and grounding in human-robot interaction scenarios.
 
-It is recommneded to use uv for the installation [uv installation guide](https://docs.astral.sh/uv/getting-started/installation).
+MERGE combines a lightweight perception pipeline with Vision-Language Models (VLMs) to identify actors and objects, track them over time, and structure interactions as actor-action-object relations. The system is designed to support temporally consistent situational grounding in dynamic group interactions involving humans and robots.
 
-Once, you have uv installed, run following commands form the root folder:
+For details, please refer to the paper:
+
+**MERGE: Guided Vision-Language Models for Multi-Actor Event Reasoning and Grounding in Human-Robot Interaction**
+Joerg Deigmoeller, Nakul Agarwal, Stephan Hasler, Daniel Tanneberg, Anna Belardinelli, Reza Ghoddoosian, Chao Wang, Felix Ocker, Fan Zhang, Behzad Dariush, Michael Gienger
+[arXiv:2603.18988](https://arxiv.org/abs/2603.18988)
+
+## Installation
+
+We recommend using [`uv`](https://docs.astral.sh/uv/getting-started/installation) for installation and dependency management.
+
+After installing `uv`, run the following commands from the project root:
 
 ```bash
 uv venv
 uv sync
 ```
 
-### Evaluation
+## Dataset
 
-You can switch between the different experiments editing following lines:
-[./examples/evaluate.py](./examples/evaluate.py#L265). Default setting
-is MERGE with GPT-4o.
+Before running the experiments, download the **GROUND** dataset from:
+
+https://usa.honda-ri.com/ground
+
+Please make sure that the dataset is available in the expected project directory before running the evaluation or experiment scripts.
+
+## API Keys
+
+To use GPT-based models, set your OpenAI API key:
+
+```bash
+export OPENAI_API_KEY="SECRET_KEY"
+```
+
+To use Gemini-based models, set your Gemini API key:
+
+```bash
+export GEMINI_API_KEY="SECRET_KEY"
+```
+
+## Evaluation
+
+The main evaluation script can be used to reproduce the quantitative results reported in the paper:
 
 ```bash
 uv run examples/evaluate.py
 ```
 
-### Experiments
+The script evaluates the method outputs stored in the dataset directories:
 
-The required image files will be shared via Github once the repository is available.
-
-To use GPT, you need to set
-```bash
-export OPENAI_API_KEY="53CRE7_KEY"
+```text
+data/scene_*/runs
 ```
 
-and for Gemini
+These folders contain the outputs produced by the different methods and baselines. The evaluation script compares these outputs against the corresponding annotations and reports the metrics used in the paper.
 
-```bash
-export GEMINI_API_KEY="53CRE7_KEY"
-```
+Different experiment configurations can be selected by editing the corresponding configuration section in:
 
-After this you can run MERGE with:
+[`examples/evaluate.py`](./examples/evaluate.py#L312)
+
+By default, the evaluation runs **MERGE with GPT-4o**.
+
+
+## Experiments
+
+To run the full MERGE pipeline, use:
 
 ```bash
 uv run examples/merge_full.py
 ```
 
-and the baseline exmaples with:
+To run the baseline experiments, use:
 
 ```bash
 uv run examples/baselines.py
 ```
+
+## Citation
+
+If you use this repository, the GROUND dataset, or the MERGE system in your research, please cite our paper:
+
+```bibtex
+@article{deigmoeller2026merge,
+  title={MERGE: Guided Vision-Language Models for Multi-Actor Event Reasoning and Grounding in Human-Robot Interaction},
+  author={Deigmoeller, Joerg and Agarwal, Nakul and Hasler, Stephan and Tanneberg, Daniel and Belardinelli, Anna and Ghoddoosian, Reza and Wang, Chao and Ocker, Felix and Zhang, Fan and Dariush, Behzad and Gienger, Michael},
+  journal={arXiv preprint arXiv:2603.18988},
+  year={2026}
+}
+```
+
+## License
+
+Please refer to the repository license for information on usage and redistribution.
