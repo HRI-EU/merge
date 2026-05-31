@@ -36,12 +36,30 @@
 #
 # -*- coding: utf-8 -*-
 
+#!/usr/bin/env bash
 set -euo pipefail
 shopt -s nullglob
 
-SRC_DIR="/hri/storage/rawvideo/Smile/ocad/GROUND-eval"
-TRG_DIR="data"
-BLUR_FACES=True
+if [[ $# -ne 1 ]]; then
+  echo "Usage: $0 <SRC_DIR>"
+  echo "Example: $0 ~/GROUND/GROUND-eval"
+  exit 1
+fi
+
+SRC_DIR="$1"
+
+if [[ ! -d "$SRC_DIR" ]]; then
+  echo "Error: SRC_DIR does not exist or is not a directory: $SRC_DIR"
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TRG_DIR="$(realpath "$SCRIPT_DIR/../data")"
+
+if [[ ! -d "$TRG_DIR" ]]; then
+  echo "Error: target data directory does not exist: $TRG_DIR"
+  exit 1
+fi
 
 for src_path in "$SRC_DIR"/scene_*; do
   [[ -d "$src_path" ]] || continue
@@ -49,48 +67,17 @@ for src_path in "$SRC_DIR"/scene_*; do
 
   echo "=== Processing: $folder_name"
 
-  rm -rf "$TRG_DIR"/"$folder_name"/"images"
-  cp -r "$SRC_DIR"/"$folder_name"/"images" "$TRG_DIR"/"$folder_name"
-  rm -rf "$TRG_DIR"/"$folder_name"/"object_images"
-  cp -r "$SRC_DIR"/"$folder_name"/"object_images" "$TRG_DIR"/"$folder_name"
-  rm -rf "$TRG_DIR"/"$folder_name"/"person_images"
-  cp -r "$SRC_DIR"/"$folder_name"/"person_images" "$TRG_DIR"/"$folder_name"
+  mkdir -p "$TRG_DIR/$folder_name"
 
-  if [ "$BLUR_FACES" = True ]; then
-    echo "Blurring faces in: $folder_name"
+  rm -rf "$TRG_DIR/$folder_name/images"
+  cp -r "$SRC_DIR/$folder_name/images" "$TRG_DIR/$folder_name"
 
-    find "$TRG_DIR/$folder_name" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) -print0 |
-    while IFS= read -r -d '' img; do
-      tmp="${img}.blurred"
-      deface "$img" --output "$tmp" --mask-scale 0.95
-      mv "$tmp" "$img"
-    done
-  fi
+  rm -rf "$TRG_DIR/$folder_name/object_images"
+  cp -r "$SRC_DIR/$folder_name/object_images" "$TRG_DIR/$folder_name"
+
+  rm -rf "$TRG_DIR/$folder_name/person_images"
+  cp -r "$SRC_DIR/$folder_name/person_images" "$TRG_DIR/$folder_name"
 
   echo "=== Done: $folder_name"
   echo
 done
-
-echo "=== Creating combined video from all images folders"
-
-LIST_FILE="$TRG_DIR/merge_eval.txt"
-VIDEO_OUT="$TRG_DIR/merge_eval.mp4"
-FPS=30
-
-rm -f "$LIST_FILE"
-
-find "$TRG_DIR" -path "*/images/*" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) \
-  | sort \
-  | while read -r img; do
-      printf "file '%s'\n" "$(realpath "$img")" >> "$LIST_FILE"
-    done
-
-ffmpeg -y \
-  -f concat \
-  -safe 0 \
-  -r "$FPS" \
-  -i "$LIST_FILE" \
-  -vf "format=yuv420p" \
-  "$VIDEO_OUT"
-
-echo "=== Video created: $VIDEO_OUT"

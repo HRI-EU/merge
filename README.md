@@ -48,7 +48,7 @@ export GEMINI_API_KEY="SECRET_KEY"
 The main evaluation script can be used to reproduce the quantitative results reported in the paper:
 
 ```bash
-uv run examples/evaluate.py
+uv run scripts/evaluate.py
 ```
 
 The script evaluates the method outputs stored in the dataset directories:
@@ -61,7 +61,7 @@ These folders contain the outputs produced by the different methods and baseline
 
 Different experiment configurations can be selected by editing the corresponding configuration section in:
 
-[`examples/evaluate.py`](./examples/evaluate.py#L312)
+[`scripts/evaluate.py`](./examples/evaluate.py#L312)
 
 By default, the evaluation runs **MERGE with GPT-4o**.
 
@@ -71,13 +71,13 @@ By default, the evaluation runs **MERGE with GPT-4o**.
 To run the full MERGE pipeline, use:
 
 ```bash
-uv run examples/merge_full.py
+uv run scripts/merge_full.py
 ```
 
 To run the baseline experiments, use:
 
 ```bash
-uv run examples/baselines.py
+uv run scripts/baselines.py
 ```
 
 ## Citation
